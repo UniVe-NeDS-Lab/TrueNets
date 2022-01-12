@@ -1,65 +1,16 @@
+from numba.cuda.cudadrv.devicearray import DeviceNDArray
 import numpy as np
-from numba import cuda, types
-import sys
+from numba import cuda
 import math
-from time import time
-from kernels import viewshed_k, threads_n, sum_k, memset_k, take_values, knife_k, los_k, dist_k, bool_k,sum_mult_k, parallel_viewshed_k, parallel_viewshed_t_k, logical_or_axis_k, CORNER_OVERLAP
+from kernels import viewshed_k, threads_n, sum_k, memset_k, take_values, knife_k, los_k, dist_k, CORNER_OVERLAP
 from tqdm import tqdm
-from pprint import pprint
-
 
 
 class Viewshed():
-    def __init__(self,  max_dist=0):
+    def __init__(self,  max_dist: int = 0):
         self.max_dist = max_dist
-    
-    def get_memory(self):
-        return cuda.current_context().get_memory_info().total
-    
-    def vertex_cover(self, raster, all_coords, pe, te,  k):
-        self.dsm_global_mem =  cuda.to_device(raster)
-        n =  len(all_coords)
-        self.building_n = n
-        self.out_global_mem = cuda.device_array(shape=(raster.shape[0], raster.shape[1], n), dtype=np.uint8)
-        self.set_memory(self.out_global_mem, 0)
-        global_viewshed = np.zeros_like(raster)
-        covered_points = np.ones_like(raster)
-        selected_points = []
-        #Run Viewsheds on all coords
-        blocks_landscape = (self.raster.shape[0] +
-                            2*self.raster.shape[0]/threads_n +
-                            CORNER_OVERLAP +
-                            threads_n-1)/threads_n
-        block_upright = (self.raster.shape[1] +
-                         2*self.raster.shape[1]/threads_n +
-                         CORNER_OVERLAP +
-                         threads_n-1)/threads_n
-        
-        blocks_z = self.building_n/threads_n
-    
-        blocks_n = max(block_upright, blocks_landscape)
-        blockspergrid = (int(blocks_n), 4, math.ceil(self.building_n//2))
-        threadsperblock = (threads_n, 1, 2)
 
-        parallel_viewshed_k[blockspergrid, threadsperblock](self.dsm_global_mem,
-                                                            self.out_global_mem,
-                                                            all_coords,
-                                                            np.int16(self.max_dist),
-                                                            np.int16(1),
-                                                            np.int16(1), #TODO: fix variable resolution
-                                                            np.float32(pe),
-                                                            np.float32(te))
-        print("Generated viewshed")
-        viewsheds =  self.out_global_mem.copy_to_host()
-        for i in tqdm(range(k)):
-            sums = np.zeros(shape=n, dtype=np.uint32)
-            sum_mult_k[n, 1](self.out_global_mem, covered_points, sums)
-            selected_mat =  sums.argmax()
-            selected_points.append(selected_mat)
-            global_viewshed += viewsheds[:,:,selected_mat]
-        return selected_points, viewsheds[:,:,0]      
-
-    def prepare_cumulative_viewshed(self, raster_np):
+    def prepare_cumulative_viewshed(self, raster_np: np.ndarray):
         """
         Prepare the cuda device for the upcoming cumulative viewshed computation.
 
@@ -72,34 +23,17 @@ class Viewshed():
 
         """
         self.raster = raster_np
-        self.dsm_global_mem = cuda.to_device(raster_np) # transfer dsm
+        self.dsm_global_mem = cuda.to_device(raster_np)  # transfer dsm
         self.out_global_mem = cuda.device_array(shape=raster_np.shape, dtype=np.uint8)
-        self.cumulative_global_mem = cuda.device_array(shape=raster_np.shape, dtype=np.uint16) #with 16bit we can have up to 65k buildings
+        self.cumulative_global_mem = cuda.device_array(shape=raster_np.shape, dtype=np.uint16)  # with 16bit we can have up to 65k buildings
         self.set_memory(self.cumulative_global_mem, 0)
         self.set_memory(self.out_global_mem, 0)
-    
-    def prepare_cumulative_viewshed_bs(self, raster_np):
-        """
-        Prepare the cuda device for the upcoming cumulative viewshed computation.
 
-        Allocate and copy the raster memory space, allocate the global memory
-        for the computation of the single viewshed and the global memory for the
-        cumulative adding
-
-        Parameters:
-        raster_np ([:][:]): 2d matrix containing the DSM of the area
-
-        """
-        self.raster = raster_np
-        self.dsm_global_mem = cuda.to_device(raster_np) # transfer dsm
-        self.out_global_mem = cuda.device_array(shape=raster_np.shape, dtype=np.uint8)
-        self.cumulative_global_mem = cuda.device_array(shape=raster_np.shape, dtype=np.uint16) #with 16bit we can have up to 65k buildings
-        self.cumulative_bool_mem = cuda.device_array(shape=raster_np.shape, dtype=np.uint16) #with 16bit we can have up to 65k buildings
-        self.set_memory(self.cumulative_global_mem, 0)
-        self.set_memory(self.out_global_mem, 0)
-        self.set_memory(self.cumulative_bool_mem, 0)
-
-    def cumulative_viewsheds(self, coordinates_list, poi_elev, tgt_elev):
+    def cumulative_viewsheds(self,
+                             coordinates_list: 'list[np.ndarray]',
+                             poi_elev:
+                             int, tgt_elev: int
+                             ) -> np.ndarray:
         """
         Run the cumulative viewshed
 
@@ -111,25 +45,31 @@ class Viewshed():
 
         """
         for c in tqdm(coordinates_list):
+            #import pdb; pdb.set_trace()
             self._run_viewshed(c, poi_elev, tgt_elev)
             self.sum_results()
         return self.cumulative_global_mem.copy_to_host()
-    
-    def cumulative_viewsheds_bs(self,coordinates_list, poi_elev, tgt_elev, poi_elev_type=0):
-        for c in coordinates_list:
-            self._run_viewshed(c, poi_elev, tgt_elev, poi_elev_type)
-            self.sum_results()
-        self.booleanize_results()
 
-    def single_viewshed(self, raster_np, poi_coord, poi_elev, tgt_elev, poi_elev_type=0):
+    def single_viewshed(self,
+                        raster_np: np.ndarray,
+                        poi_coord: np.ndarray,
+                        poi_elev: int,
+                        tgt_elev: int,
+                        poi_elev_type=0
+                        ) -> np.ndarray:
         self.raster = raster_np
-        self.dsm_global_mem = cuda.to_device(raster_np) # transfer dsm
+        self.dsm_global_mem = cuda.to_device(raster_np)  # transfer dsm
         self.out_global_mem = cuda.device_array(shape=raster_np.shape, dtype=np.uint8)
         self.set_memory(self.out_global_mem, 0)
         self._run_viewshed(poi_coord, poi_elev, tgt_elev, poi_elev_type)
         return self.out_global_mem.copy_to_host()
 
-    def _run_viewshed(self, poi_coord, poi_elev, tgt_elev, poi_elev_type=0):
+    def _run_viewshed(self,
+                      poi_coord: np.ndarray,
+                      poi_elev: int,
+                      tgt_elev: int,
+                      poi_elev_type=0
+                      ) -> None:
         """
         Run the  single viewshed kernel
 
@@ -139,7 +79,7 @@ class Viewshed():
         poi_elev (int): height of the observer above the DSM
         tgt_elev (int): height of the target above the DSM
         """
-        #calculate block size and thread number
+        # calculate block size and thread number
         blocks_landscape = (self.raster.shape[0] +
                             2*self.raster.shape[0]/threads_n +
                             CORNER_OVERLAP +
@@ -161,74 +101,10 @@ class Viewshed():
                                                    np.float32(tgt_elev),
                                                    poi_elev_type)
 
-    def parallel_viewsheds(self, raster_np, poi_coords, poi_elev, tgt_elev):
-        self.raster = raster_np
-        self.dsm_global_mem = cuda.to_device(raster_np) # transfer dsm
-        self.building_n =  len(poi_coords)
-        self.out_global_mem = cuda.device_array(shape=(raster_np.shape[0], raster_np.shape[1], self.building_n), dtype=np.uint8)
-        self.set_memory(self.out_global_mem, 0)
-
-        #calculate block size and thread number
-        blocks_landscape = (self.raster.shape[0] +
-                            2*self.raster.shape[0]/threads_n +
-                            CORNER_OVERLAP +
-                            threads_n-1)/threads_n
-        block_upright = (self.raster.shape[1] +
-                         2*self.raster.shape[1]/threads_n +
-                         CORNER_OVERLAP +
-                         threads_n-1)/threads_n
-        
-        blocks_z = self.building_n/threads_n
-    
-        blocks_n = max(block_upright, blocks_landscape)
-        blockspergrid = (int(blocks_n), 4, math.ceil(self.building_n//2))
-        threadsperblock = (threads_n, 1, 2)
-
-        parallel_viewshed_k[blockspergrid, threadsperblock](self.dsm_global_mem,
-                                                            self.out_global_mem,
-                                                            poi_coords,
-                                                            np.int16(self.max_dist),
-                                                            np.int16(1),
-                                                            np.int16(1), #TODO: fix variable resolution
-                                                            np.float32(poi_elev),
-                                                            np.float32(tgt_elev))
-        return self.out_global_mem.copy_to_host()
-
-    def parallel_viewsheds_translated(self, raster_np, poi_coords, translation_matrix, n_points, poi_elev, tgt_elev, poi_elev_type):
-        self.raster = raster_np
-        self.dsm_global_mem = cuda.to_device(raster_np) # transfer dsm
-        self.translation_matrix = cuda.to_device(translation_matrix) # transfer dsm
-        self.building_n =  len(poi_coords)
-        self.coords = cuda.to_device(poi_coords)
-        self.out_global_mem = cuda.device_array(shape=(n_points, self.building_n), dtype=np.uint8)
-        self.set_memory(self.out_global_mem, 0)
-        #calculate block size and thread number
-        blocks_landscape = (self.raster.shape[0] +
-                            2*self.raster.shape[0]/threads_n +
-                            CORNER_OVERLAP +
-                            threads_n-1)/threads_n
-        block_upright = (self.raster.shape[1] +
-                         2*self.raster.shape[1]/threads_n +
-                         CORNER_OVERLAP +
-                         threads_n-1)/threads_n
-        
-        blocks_z = self.building_n/threads_n
-    
-        blocks_n = max(block_upright, blocks_landscape)
-        blockspergrid = (int(blocks_n), 4, math.ceil(self.building_n//2))
-        threadsperblock = (threads_n, 1, 2)
-        parallel_viewshed_t_k[blockspergrid, threadsperblock](self.dsm_global_mem,
-                                                            self.out_global_mem,
-                                                            self.translation_matrix,
-                                                            self.coords,
-                                                            np.int16(self.max_dist),
-                                                            np.int16(1),
-                                                            np.int16(1), #TODO: fix variable resolution
-                                                            np.float32(poi_elev),
-                                                            np.float32(tgt_elev),
-                                                            poi_elev_type)
-
-    def set_memory(self, array, val):
+    def set_memory(self,
+                   array: DeviceNDArray,
+                   val: int
+                   ) -> None:
         """
         Set a 2d or 1d ndarray to a given value using the custom kernel
 
@@ -240,17 +116,17 @@ class Viewshed():
         val (): value to set
         """
 
-        if(len(array.shape)>=2 and array.shape[1] >= 16): #2df
+        if(len(array.shape) >= 2 and array.shape[1] >= 16):  # 2df
             threadsperblock = (16, 16)
             blockspergrid_y = int(math.ceil(array.shape[1] / threadsperblock[1]))
-        else:                     #1d or 2d smaller than 16
+        else:  # 1d or 2d smaller than 16
             threadsperblock = (16, 1)
             blockspergrid_y = 1
         blockspergrid_x = int(math.ceil(array.shape[0] / threadsperblock[0]))
         blockspergrid = (blockspergrid_x, blockspergrid_y)
         memset_k[blockspergrid, threadsperblock](array, val)
 
-    def sum_results(self):
+    def sum_results(self) -> None:
         """
         Sum the results of the viewshed computation on another memory space and
         set the original one to 0
@@ -267,73 +143,11 @@ class Viewshed():
         blockspergrid_y = int(math.ceil(self.out_global_mem.shape[1] / threadsperblock[1]))
         blockspergrid = (blockspergrid_x, blockspergrid_y)
         sum_k[blockspergrid, threadsperblock](self.out_global_mem, self.cumulative_global_mem)
-    
-    def booleanize_results(self):
-        """
-        Booleanize the result of the cumulative_vs into 0s and 1s into a new memory and reset the original one
-
-        This function calls a kernel that set the memory space to a given value
-
-        Parameters:
-        array (ndarray): numba cuda array to be setted
-        val (): value to set
-        """
-
-        threadsperblock = (16, 16)
-        blockspergrid_x = int(math.ceil(self.out_global_mem.shape[0] / threadsperblock[0]))
-        blockspergrid_y = int(math.ceil(self.out_global_mem.shape[1] / tfparallel_cumulative_buildings_vshreadsperblock[1]))
-        blockspergrid = (blockspergrid_x, blockspergrid_y)
-        bool_k[blockspergrid, threadsperblock](self.cumulative_global_mem, self.cumulative_bool_mem)
-
-    def parallel_cumulative_buildings_vs(self, raster, translation_matrix, n_points, coords_lists, poi_elev, tgt_elev, poi_elev_type):
-        output = np.zeros(shape=(n_points, len(coords_lists)), dtype=np.uint8)
-        output_cuda = cuda.to_device(output)
-        for idx, c_list in enumerate(tqdm(coords_lists)):
-            if c_list:
-                dsm_global_mem = cuda.to_device(raster) # transfer dsm
-                cu_translation_matrix = cuda.to_device(translation_matrix) # transfer dsm
-                building_n =  len(c_list)
-                cu_coords = cuda.to_device(c_list)
-                out_global_mem = cuda.device_array(shape=(n_points, building_n), dtype=np.uint8)
-                self.set_memory(out_global_mem, 0)
-                #calculate block size and thread number
-                blocks_landscape = (raster.shape[0] +
-                                    2*raster.shape[0]/threads_n +
-                                    CORNER_OVERLAP +
-                                    threads_n-1)/threads_n
-                block_upright = (raster.shape[1] +
-                                2*raster.shape[1]/threads_n +
-                                CORNER_OVERLAP +
-                                threads_n-1)/threads_n
-            
-                blocks_n = max(block_upright, blocks_landscape)
-                blockspergrid = (int(blocks_n), 4,  math.ceil(building_n//2))
-                threadsperblock = (threads_n, 1, 1)
-                try:
-                    parallel_viewshed_t_k[blockspergrid, threadsperblock](dsm_global_mem,
-                                                                        out_global_mem,
-                                                                        cu_translation_matrix,
-                                                                        cu_coords,
-                                                                        np.int16(self.max_dist),
-                                                                        np.int16(1),
-                                                                        np.int16(1), #TODO: fix variable resolution
-                                                                        np.float32(poi_elev),
-                                                                        np.float32(tgt_elev),
-                                                                        poi_elev_type)
-                except:
-                    import pdb; pdb.set_trace()
-                logical_or_axis_k[n_points, 1](out_global_mem, output_cuda, idx)
-                self.set_memory(out_global_mem, 0)
-
-        self.out_global_mem = output_cuda
-    
 
 
+# TrueNets (intervisibility graphs)
 
-
-## TrueNets (intervisibility graphs)
-
-    def _extract_values(self, i):
+    def _extract_values(self, i: int) -> None:
         """
         Extract the values of the i-th computation and write them to the i-th line
         of the output matrix
@@ -354,26 +168,19 @@ class Viewshed():
                                                       self.intervisibility_mat,
                                                       i)
 
-    def prepare_intervisibility(self, raster):
+    def prepare_intervisibility(self, raster: np.ndarray) -> None:
         self.raster = raster
-        self.dsm_global_mem = cuda.to_device(raster) # transfer dsm
+        self.dsm_global_mem = cuda.to_device(raster)  # transfer dsm
         self.out_global_mem = cuda.device_array(shape=raster.shape,
                                                 dtype=np.uint8)
         self.set_memory(self.out_global_mem, 0)
 
-    def generate_intervisibility(self, coordinates, poi_elev, tgt_elev):
-        self.building_n = coordinates.shape[0]
-        self.building_list = cuda.to_device(coordinates)
-        self.intervisibility_mat = cuda.device_array(shape=(self.building_n,
-                                                            self.building_n),
-                                                     dtype=np.uint8)
-        for idx, c in enumerate(tqdm(coordinates)):
-            self._run_viewshed(c, poi_elev, tgt_elev)
-            self._extract_values(idx)
-            self.set_memory(self.out_global_mem, 0)
-        return self.intervisibility_mat.copy_to_host()
-
-    def generate_intervisibility_fast(self, raster, coordinates, poi_elev, tgt_elev):
+    def generate_intervisibility_fast(self,
+                                      raster: np.ndarray,
+                                      coordinates: np.ndarray,
+                                      poi_elev: int,
+                                      tgt_elev: int
+                                      ) -> np.ndarray:
         self.raster = raster
         self.dsm_global_mem = cuda.to_device(raster)
         self.building_n = coordinates.shape[0]
@@ -382,8 +189,8 @@ class Viewshed():
                                                             self.building_n),
                                                      dtype=np.uint8)
         self.set_memory(self.intervisibility_mat, 0)
-        threadsperblock = 16 #a big number will slow down since we have heterogeneous links per block
-        blockspergrid_x = int(math.ceil(self.building_n/ threadsperblock))
+        threadsperblock = 16
+        blockspergrid_x = int(math.ceil(self.building_n / threadsperblock))
         los_k[(blockspergrid_x, blockspergrid_x),
               (threadsperblock, threadsperblock)](self.dsm_global_mem,
                                                   self.building_list,
@@ -394,48 +201,62 @@ class Viewshed():
                                                   np.float32(tgt_elev))
         return self.intervisibility_mat.copy_to_host()
 
-    def calculate_distance(self, adj_list, coordinates_dict, n_buildings):
-        self.intervisibility_mat = cuda.device_array(shape=(n_buildings , n_buildings),
-                                                     dtype=np.float32) #TODO: check memory problems with more bit
+    def calculate_distance(self,
+                           adj_list: 'list[list]',
+                           coordinates_dict: dict,
+                           n_buildings: int
+                           ) -> np.ndarray:
+
+        self.intervisibility_mat = cuda.device_array(shape=(n_buildings, n_buildings),
+                                                     dtype=np.float32)
         self.set_memory(self.intervisibility_mat, 0)
         for l in tqdm(adj_list):
             n_tgt = len(l)
-            #create 2d array with id, y, x (id must be the index of the ordered array)
+            # create 2d array with id, y, x (id must be the index of the ordered array)
             adj_array = np.zeros(shape=(n_tgt, 3), dtype=np.int32)
             for j in range(0, n_tgt):
-                    adj_array[j] = coordinates_dict[l[j]]
-            threadsperblock = 32 #a big number will slow down since we have heterogeneous links per block
-            blockspergrid_x = int(math.ceil(n_tgt/ threadsperblock))
+                adj_array[j] = coordinates_dict[l[j]]
+            threadsperblock = 32
+            blockspergrid_x = int(math.ceil(n_tgt / threadsperblock))
             dist_k[blockspergrid_x, threadsperblock](adj_array,
-                                                    self.intervisibility_mat,
-                                                    np.uint16(1),
-                                                    np.uint16(1))
+                                                     self.intervisibility_mat,
+                                                     np.uint16(1),
+                                                     np.uint16(1))
         return self.intervisibility_mat.copy_to_host()
 
-    def knife_edge(self, raster, adj_list, coordinates_dict, n_buildings,  poi_elev, tgt_elev, ple=2, f=5):
+    def knife_edge(self,
+                   raster: np.ndarray,
+                   adj_list: 'list[list]',
+                   coordinates_dict: dict,
+                   n_buildings: int,
+                   poi_elev: int,
+                   tgt_elev: int,
+                   ple: float = 2.0,
+                   f: float = 5
+                   ) -> 'tuple[np.ndarray, np.ndarray]':
         self.dsm_global_mem = cuda.to_device(raster)
-        lmb=0.299792458/f
-        self.intervisibility_mat = cuda.device_array(shape=(n_buildings , n_buildings),
-                                                     dtype=np.uint16) #TODO: check memory problems with more bit
-        self.angles_mat = cuda.device_array(shape=(n_buildings , n_buildings, 2),
-                                                     dtype=np.int16)
+        lmb = 0.299792458/f
+        self.intervisibility_mat = cuda.device_array(shape=(n_buildings, n_buildings),
+                                                     dtype=np.uint16)  # TODO: check memory problems with more bit
+        self.angles_mat = cuda.device_array(shape=(n_buildings, n_buildings, 2),
+                                            dtype=np.int16)
         self.set_memory(self.intervisibility_mat, 0)
         for l in tqdm(adj_list):
             n_tgt = len(l)
-            #create 2d array with id, y, x (id must be the index of the ordered array)
+            # create 2d array with id, y, x (id must be the index of the ordered array)
             adj_array = np.zeros(shape=(n_tgt, 3), dtype=np.int32)
             for j in range(0, n_tgt):
-                    adj_array[j] = coordinates_dict[l[j]]
-            threadsperblock = 32 #a big number will slow down since we have heterogeneous links per block
-            blockspergrid_x = int(math.ceil(n_tgt/ threadsperblock))
+                adj_array[j] = coordinates_dict[l[j]]
+            threadsperblock = 32  # a big number will slow down since we have heterogeneous links per block
+            blockspergrid_x = int(math.ceil(n_tgt / threadsperblock))
             knife_k[blockspergrid_x, threadsperblock](self.dsm_global_mem,
-                                                    adj_array,
-                                                    self.intervisibility_mat,
-                                                    self.angles_mat,
-                                                    np.uint16(1),
-                                                    np.uint16(1),
-                                                    np.float32(poi_elev),
-                                                    np.float32(tgt_elev),
-                                                    np.uint16(ple),
-                                                    np.float32(lmb))
+                                                      adj_array,
+                                                      self.intervisibility_mat,
+                                                      self.angles_mat,
+                                                      np.uint16(1),
+                                                      np.uint16(1),
+                                                      np.float32(poi_elev),
+                                                      np.float32(tgt_elev),
+                                                      np.float32(ple),
+                                                      np.float32(lmb))
         return (self.intervisibility_mat.copy_to_host(), self.angles_mat.copy_to_host())
