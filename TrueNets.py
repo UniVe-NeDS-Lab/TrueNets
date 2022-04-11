@@ -9,6 +9,7 @@ import numpy as np
 from tqdm import tqdm
 import os
 from PIL import Image
+from rasterio.mask import mask
 
 
 class TrueNets():
@@ -33,6 +34,16 @@ class TrueNets():
                                              self.ordered_coordinates[x][0])
                 neighs = list(map(fx, idx))
                 fw.write('\n'.join(neighs))
+
+    def convert_matrix_to_adj(self, matrix, filename):
+        with open("%s/%s.adj" % (self.base_dir, filename), 'w') as fw:
+            csv_w = csv.writer(fw)
+            for i, np_line in enumerate(tqdm(matrix)):
+                idx = np.nonzero(np_line)[0]
+                neighs = [self.ordered_coordinates[i][0]]
+                def fx(x): return self.ordered_coordinates[x][0]
+                neighs.extend(map(fx, idx))
+                csv_w.writerow(neighs)
 
     def convert_matrix_to_jpg(self, matrix: np.ndarray, filename: str, mult: int = 255):
         im = Image.fromarray(np.uint8(matrix*mult))
@@ -114,8 +125,7 @@ class TrueNets():
         results = np.zeros(shape=(len(self.buildings), 3))
         for idx, b in enumerate(tqdm(self.buildings)):
             roof = b.shape()
-            relative_visibility = rio.mask.mask(self.dataset, roof, crop=True)
-            max = relative_visibility[0].argmax()
+            relative_visibility = mask(self.dataset, roof, crop=True)
             relative_position = np.unravel_index(relative_visibility[0].argmax(), relative_visibility[0].shape)
             abs_pos = rio.transform.xy(relative_visibility[1], relative_position[1], relative_position[2], offset='ul')
             results[idx] = [b.id(), abs_pos[0], abs_pos[1]]
@@ -127,7 +137,7 @@ class TrueNets():
         results = np.zeros(shape=(len(self.buildings), 3))
         for idx, b in enumerate(tqdm(self.buildings)):
             roof = b.shape()
-            relative_visibility = rio.mask.mask(self.dataset, roof, crop=True)
+            relative_visibility = mask(self.dataset, roof, crop=True)
             max = relative_visibility[0].argmax()
             relative_position = np.unravel_index(relative_visibility[0].argmax(), relative_visibility[0].shape)
             abs_pos = rio.transform.xy(relative_visibility[1], relative_position[1], relative_position[2], offset='ul')
@@ -160,16 +170,18 @@ class TrueNets():
         print(building_n)
         #np.savetxt(f"{self.base_dir}/{filename}ivg.csv", result, delimiter=',', fmt='%d')
         self.convert_matrix_to_simple_edgelist(result, f"{filename}_intervisibility")
+        self.convert_matrix_to_adj(result, f"{filename}_intervisibility")
 
-    def distance(self):
+    def distance(self, filename='best_p_intervisibility.adj'):
         adj_list = []
-        with open("%s/intervisibility.adj" % (self.base_dir), 'r') as csv_f:
+        with open(f"{self.base_dir}/{filename}", 'r') as csv_f:
             csv_r = csv.reader(csv_f, delimiter=',')
             for l in csv_r:
-                line = []
-                for c in l:
-                    line.append(int(c))
-                adj_list.append(line)
+                if(l):
+                    line = []
+                    for c in l:
+                        line.append(int(c))
+                    adj_list.append(line)
         raster = self.read_raster("%s/%s.tif" % (self.raster_dir, self.comune.lower()))
         point_list = np.genfromtxt("%s/best_p.csv" % (self.base_dir), delimiter=',')
         self.ordered_coordinates = np.array(sorted(point_list, key=lambda x: x[0]), dtype=np.uint32)
@@ -182,7 +194,7 @@ class TrueNets():
         result = self.vs.calculate_distance(adj_list,
                                             self.coordinates_dict,
                                             self.ordered_coordinates.shape[0])
-        np.savetxt("%s/distance.csv" % (self.base_dir), result, delimiter=',', fmt='%d')
+        #np.savetxt("%s/distance.csv" % (self.base_dir), result, delimiter=',', fmt='%d')
         with open("%s/%s.edgelist" % (self.base_dir, "distance"), 'w') as fw:
             for i in tqdm(range(result.shape[0])):
                 distance_line = result[i]
