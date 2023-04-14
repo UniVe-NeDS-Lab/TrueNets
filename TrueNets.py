@@ -8,7 +8,7 @@ import rasterio as rio
 import numpy as np
 from tqdm import tqdm
 import os
-from PIL import Image
+#from PIL import Image
 from rasterio.mask import mask
 
 
@@ -45,9 +45,9 @@ class TrueNets():
                 neighs.extend(map(fx, idx))
                 csv_w.writerow(neighs)
 
-    def convert_matrix_to_jpg(self, matrix: np.ndarray, filename: str, mult: int = 255):
-        im = Image.fromarray(np.uint8(matrix*mult))
-        im.save(self.base_dir+'/'+filename+".jpg")
+    # def convert_matrix_to_jpg(self, matrix: np.ndarray, filename: str, mult: int = 255):
+    #     im = Image.fromarray(np.uint8(matrix*mult))
+    #     im.save(self.base_dir+'/'+filename+".jpg")
 
     def read_raster(self, path: str) -> DatasetReader:
         self.dataset = rio.open(path, crs=self.crs)

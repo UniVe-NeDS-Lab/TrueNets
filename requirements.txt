@@ -1,0 +1,6 @@
+rasterio
+tqdm
+numba
+sqlalchemy
+geoalchemy2
+shapely
