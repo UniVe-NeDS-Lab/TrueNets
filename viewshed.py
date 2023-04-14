@@ -45,7 +45,6 @@ class Viewshed():
 
         """
         for c in tqdm(coordinates_list):
-            #import pdb; pdb.set_trace()
             self._run_viewshed(c, poi_elev, tgt_elev)
             self.sum_results()
         return self.cumulative_global_mem.copy_to_host()

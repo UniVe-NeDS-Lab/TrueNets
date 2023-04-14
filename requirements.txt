@@ -3,4 +3,5 @@ tqdm
 numba
 sqlalchemy
 geoalchemy2
-shapely
+shapely==1.8.2
+psycopg2-binary
